@@ -1,5 +1,5 @@
 class CuttingPlaneMethod:
-    def __init__(self, instanceName, maxIteration = 100, OutputFlag = 0, Threads = 1, MIPGap = 0.0, TimeLimit = 3600, MIPFocus = 2, cglp_OutputFlag = 0, cglp_Threads = 1, cglp_MIPGap = 0.0, cglp_TimeLimit = 100, cglp_MIPFocus = 0, addCutToMIP = False, number_branch_var = 2):
+    def __init__(self, instanceName, maxIteration = 100, OutputFlag = 0, Threads = 1, MIPGap = 0.0, TimeLimit = 3600, MIPFocus = 2, cglp_OutputFlag = 0, cglp_Threads = 1, cglp_MIPGap = 0.0, cglp_TimeLimit = 100, cglp_MIPFocus = 0, addCutToMIP = False, number_branch_var = 2, normalization = 'SNC'):
         self.iteration = 0
         self.maxIteration = maxIteration
         self.maxBound = 1e5
@@ -20,6 +20,7 @@ class CuttingPlaneMethod:
         self.lp_sol = None
         self.varName_map_position = {}
         # Cut List
+        self.normalization = normalization
         self.number_branch_var = number_branch_var
         self.nodeSet = {}                           # nodeSet[node] <- (LB, UB)
         self.addCutToMIP = addCutToMIP
@@ -247,7 +248,10 @@ class CuttingPlaneMethod:
                     eqConstraint.addTerms(self.A[j, i], cglp_lambda[node_index][j])
                 cglp.addConstr(eqConstraint == 0, name=f'equation2_{node_index}_{var}')
         # normalization constraint
-        cglp.addConstr(normalizationConstraint == 0, name='normalizationConstraint')
+        if self.normalization == 'SNC':
+            cglp.addConstr(normalizationConstraint == 0, name='normalizationConstraint')
+        elif self.normalization == 'fix_pi0':
+            cglp.addConstr(pi0 == 1, name='normalizationConstraint')
 
         # Set parameters
         cglp.Params.OutputFlag = self.cglp_OutputFlag
