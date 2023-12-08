@@ -1,3 +1,13 @@
+from copy import deepcopy
+import gurobipy as gp
+from gurobipy import GRB
+import torch
+import torch.nn as nn
+import numpy as np
+import os
+import math
+import time
+
 class CuttingPlaneMethod:
     def __init__(self, instanceName, maxIteration = 100, OutputFlag = 0, Threads = 1, MIPGap = 0.0, TimeLimit = 3600, MIPFocus = 2, cglp_OutputFlag = 0, cglp_Threads = 1, cglp_MIPGap = 0.0, cglp_TimeLimit = 100, cglp_MIPFocus = 0, addCutToMIP = False, number_branch_var = 2, normalization = 'SNC'):
         self.iteration = 0
@@ -123,82 +133,6 @@ class CuttingPlaneMethod:
                     self.non_binary_vars[self.iteration][v.varName] = abs(relaxed_value - round(relaxed_value))
         self.iteration += 1
 
-    def var_choice(self):
-        # TODO::add ML model to choose the variable to branch
-        # choose the variable to branch: Maximum Fractionality Rule
-        number_of_candidates = self.number_branch_var                                                                       # the number of variables that are chosen to branch, so the number of nodes in the branching tree is 2^number_of_candidates
-        number_of_noninteger = len(self.non_integer_vars[self.iteration - 1])
-        number_of_nonbinary = len(self.non_binary_vars[self.iteration - 1])
-        if number_of_noninteger > 0 or number_of_nonbinary > 0:
-            self.branchVar[self.iteration-1] = {}
-            if number_of_noninteger > 0:
-                list1 = sorted(self.non_integer_vars[0].items(), key=lambda x: x[1], reverse=True)[:number_of_candidates]   # find the integer variables that have the largest distance to the nearest integer
-                if len(list1) <= number_of_candidates:
-                    for item in list1:
-                        self.branchVar[self.iteration-1][item[0]] = item[1] # 
-                else:
-                    for item in list1[0:number_of_candidates]:
-                        self.branchVar[self.iteration-1][item[0]] = item[1]
-
-            if number_of_nonbinary > 0: 
-                list2 = sorted(self.non_binary_vars[0].items(), key=lambda x: x[1], reverse=True)[:number_of_candidates]    # find the binary variables that have the largest distance to {0,1}
-                if len(list2) <= number_of_candidates:
-                    for item in list1:
-                        self.branchVar[self.iteration-1][item[0]] = item[1]
-                else:
-                    for item in list2[0:number_of_candidates]:
-                        self.branchVar[self.iteration-1][item[0]] = item[1]
-        else:
-            return None
-
-
-    def branching_tree_building(self, node, level, varInfo):
-        if level == len(self.branchVar[self.iteration-1]):
-            return
-        else:
-            varName, info = list(varInfo.items())[level]
-            pos = self.varName_map_position[varName]
-
-            left_node = {}
-            left_node['LB'] = deepcopy(self.nodeSet[node]['LB'])
-            left_node['LB'][pos] = info['upper']
-            left_node['UB'] = deepcopy(self.nodeSet[node]['UB'])
-            left_node['trace'] = deepcopy(self.nodeSet[node]['trace'])
-            left_node['trace'].append('l')
-            
-            right_node = {}
-            right_node['LB'] = deepcopy(self.nodeSet[node]['LB'])
-            right_node['UB'] = deepcopy(self.nodeSet[node]['UB'])
-            right_node['UB'][pos] = info['lower']
-            right_node['trace'] = deepcopy(self.nodeSet[node]['trace'])
-            right_node['trace'].append('r')
-
-            left_node_ind = max(self.nodeSet.keys()) + 1
-            right_node_ind = left_node_ind + 1
-            self.nodeSet[left_node_ind] = left_node
-            self.nodeSet[right_node_ind] = right_node
-            del self.nodeSet[node]  
-
-            self.branching_tree_building(left_node_ind, level+1, varInfo)
-            self.branching_tree_building(right_node_ind, level+1, varInfo)
-
-
-        
-    def branching_tree(self):
-        varInfo = {}
-        for varName in self.branchVar[self.iteration-1].keys():
-            varInfo[varName] = {}
-            varInfo[varName]['val'] = self.lp_relaxation.getVarByName(varName).x
-            varInfo[varName]['lower'] = math.floor(varInfo[varName]['val'])
-            varInfo[varName]['upper'] = math.ceil(varInfo[varName]['val'])
-        
-        self.nodeSet = {}
-        self.nodeSet[0] = {}
-        self.nodeSet[0]['LB'] = deepcopy(self.LB)
-        self.nodeSet[0]['UB'] = deepcopy(self.UB)
-        self.nodeSet[0]['trace'] = []
-        self.branching_tree_building(0, 0, varInfo)        
-
     def cut_generation(self):
         cglp = gp.Model("cglp")
         # Create variables
@@ -221,9 +155,24 @@ class CuttingPlaneMethod:
             # cglp equation (3) in ORL paper
             ineqConstraint=gp.LinExpr(-pi0)
             for i in range(num_constrs):
-                cglp_lambda[node_index].append(cglp.addVar(vtype=GRB.CONTINUOUS,lb=0.0,name=f'lambda_{node_index}_{i}',obj=0.0))
-                ineqConstraint.addTerms(self.RHS[i], cglp_lambda[node_index][i])
-                normalizationConstraint.addTerms(1, cglp_lambda[node_index][i])
+                sense = self.SENSE[i]
+                if sense == '<':
+                    cglp_lambda[node_index].append(cglp.addVar(vtype=GRB.CONTINUOUS,lb=0.0,name=f'lambda_{node_index}_{i}',obj=0.0))
+                    ineqConstraint.addTerms(-self.RHS[i], cglp_lambda[node_index][i])
+                    normalizationConstraint.addTerms(1, cglp_lambda[node_index][i])
+                elif sense == '>':
+                    cglp_lambda[node_index].append(cglp.addVar(vtype=GRB.CONTINUOUS,lb=0.0,name=f'lambda_{node_index}_{i}',obj=0.0))
+                    ineqConstraint.addTerms(self.RHS[i], cglp_lambda[node_index][i])
+                    normalizationConstraint.addTerms(1, cglp_lambda[node_index][i])
+                elif sense == '=':
+                    # Ax = b <=> Ax >= b and -Ax >= -b
+                    cglp_lambda[node_index].append(cglp.addVars(['+', '-'], vtype=GRB.CONTINUOUS,lb=0.0,name=f'lambda_{node_index}_{i}',obj=0.0))
+                    ineqConstraint.addTerms(self.RHS[i], cglp_lambda[node_index][i]['+'])
+                    normalizationConstraint.addTerms(1, cglp_lambda[node_index][i]['+'])
+
+                    ineqConstraint.addTerms(-self.RHS[i], cglp_lambda[node_index][i]['-'])
+                    normalizationConstraint.addTerms(1, cglp_lambda[node_index][i]['-'])
+                
             for i in range(num_vars):
                 var = self.varName[i]
                 cglp_mu[node_index].append(cglp.addVar(vtype=GRB.CONTINUOUS,lb=0.0,name=f'mu_{node_index}_{var}',obj=0.0))
@@ -245,7 +194,16 @@ class CuttingPlaneMethod:
                 ## add matrix multiplication term
                 constr_index = self.A.getcol(i).nonzero()[0] # the set of constraints that contain the variable 'var'
                 for j in constr_index:
-                    eqConstraint.addTerms(self.A[j, i], cglp_lambda[node_index][j])
+                    sense = self.SENSE[j]
+                    if sense == '<':
+                        eqConstraint.addTerms(-self.A[j, i], cglp_lambda[node_index][j])
+                    elif sense == '>': 
+                        eqConstraint.addTerms(self.A[j, i], cglp_lambda[node_index][j])
+                    elif sense == '=':
+                        eqConstraint.addTerms(self.A[j, i], cglp_lambda[node_index][j]['+'])
+                        eqConstraint.addTerms(-self.A[j, i], cglp_lambda[node_index][j]['-'])
+
+                    
                 cglp.addConstr(eqConstraint == 0, name=f'equation2_{node_index}_{var}')
         # normalization constraint
         if self.normalization == 'SNC':
@@ -287,36 +245,17 @@ class CuttingPlaneMethod:
             print(f'cglp status: {cglp.status}')
             return None
 
-    def print_iteration_info(self):
-        # print(f'  ::::::  Step: {step}, #rows:{current_nrow}\n        --- LP Obj  : {lpobj}\n        --- last Obj: {last_obj}\n        *** imp: {improvement}')
-        # print(f'---------------------------------------')
-        # print(f'|  #  |  VName  |  logits  |  LP Sol  |')
-        # print(f'---------------------------------------')
-        # # '{:10s} {:3d}  {:7.2f}'.format('xxx', 123, 98)
-        # for idx,ele in enumerate(logits_map):
-        #     print('| '+'{:4d}'.format(idx)+'|  '+'{:7s}'.format(ele[0])+'| '+'{:8.4f}'.format(ele[1][0])+' | '+'{:8.4f}'.format(lp_sol_map[ele[0]])+' |')
-        #     predicted_.add(ele[0])
-        #     labels.append(ele[1][1])
-        # print(f'---------------------------------------')
-        # input('Press key to continue')
+    def print_iteration_info(self, cut_time, iteration_time, overall):
         if self.iteration == 1:
             print(f'This problem has {len(self.integer_vars)} integer variables and {len(self.binary_vars)} binary variables.')
             print(f'The optimal value of LP relaxation is {self.lp_obj_value[self.iteration-1]}.')
-            print(f'--------------------------------------------------------------------------------------------------')
-            print(f'|  Iter  |  # fractional var  |  current value  |  Relative Improvement  |  Overall Improvement  |')
-            print(f'--------------------------------------------------------------------------------------------------')
+            print(f'---------------------------------------------------------------------------------------------------------------------------------')
+            print(f'|  Iter  |  # fractional var  |  current value  |  Relative Improvement  |  Overall Improvement  |  Iter Time  |  Overall Time  |')
+            print(f'---------------------------------------------------------------------------------------------------------------------------------')
         else:
-            print('| '+'{:7d}'.format(self.iteration-1)+'| '+'{:19d}'.format(len(self.non_integer_vars[self.iteration-1]) + len(self.non_binary_vars[self.iteration-1]))+'| '+'{:16.4f}'.format(self.lp_obj_value[self.iteration-1])+'| '+'{:22.4f}'.format( abs(self.lp_obj_value[self.iteration-1]-self.lp_obj_value[self.iteration-2])/self.lp_obj_value[self.iteration-1] * 100 )+' | '+'{:21.4f}'.format(abs(self.lp_obj_value[self.iteration-1]-self.lp_obj_value[0])/self.lp_obj_value[0] * 100)+' |')
+            print('| '+'{:7d}'.format(self.iteration-1)+'| '+'{:19d}'.format(len(self.non_integer_vars[self.iteration-1]) + len(self.non_binary_vars[self.iteration-1]))+'| '+'{:16.4f}'.format(self.lp_obj_value[self.iteration-1])+'| '+'{:22.4f}'.format( abs(self.lp_obj_value[self.iteration-1]-self.lp_obj_value[self.iteration-2])/self.lp_obj_value[self.iteration-1] * 100 )+' | '+'{:21.4f}'.format(abs(self.lp_obj_value[self.iteration-1]-self.lp_obj_value[0])/self.lp_obj_value[0] * 100)+' | '+'{:11.4f}'.format(iteration_time)+' | '+'{:14.4f}'.format(overall)+' |')
         
-        if self.iteration == self.maxIteration:
-            print(f'--------------------------------------------------------------------------------------------------')
-
-    def solve(self):
-        while self.iteration < self.maxIteration:
-            self.master_problem()
-            self.var_choice()
-            self.branching_tree()
-            self.cut_generation()
-            self.print_iteration_info()
-                
+        if self.iteration > self.maxIteration:
+            print(f'---------------------------------------------------------------------------------------------------------------------------------')
+              
     
