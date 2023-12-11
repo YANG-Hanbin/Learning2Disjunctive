@@ -13,6 +13,7 @@ class CuttingPlaneMethod:
         self.iteration = 0
         self.maxIteration = maxIteration
         self.maxBound = 1e5
+        self.OPT = False
         # Instance Info
         self.mipModel = None
         self.instanceName = instanceName
@@ -49,8 +50,13 @@ class CuttingPlaneMethod:
         self.cglp_MIPGap = cglp_MIPGap
         self.cglp_TimeLimit = cglp_TimeLimit
         self.cglp_MIPFocus = cglp_MIPFocus
-        # intialize the instance
-        self.readin()                  
+        # initialize NN parameters
+        self.C = None
+        self._A = None
+        self.V = None
+        self.Cand = None    
+         # intialize the instance
+        self.readin()         
 
     def readin(self):
         #load instance info
@@ -58,6 +64,7 @@ class CuttingPlaneMethod:
         self.mipModel = gp.read(ins_dir)
         self.variables = self.mipModel.getVars()
         self.A = self.mipModel.getA()
+        self._A = deepcopy(self.mipModel.getA())
         self.RHS = self.mipModel.getAttr('RHS')
         self.SENSE = self.mipModel.getAttr('Sense')
         self.LB = self.mipModel.getAttr('LB')
@@ -108,6 +115,31 @@ class CuttingPlaneMethod:
         # self.mipModel.Params.StrongCGCuts = 0
         self.lp_relaxation = self.mipModel.relax()
         self.lp_relaxation.update()
+
+        # preprocessing for NN models
+        V = []
+        for varName in self.varName:
+            var = self.mipModel.getVarByName(varName)
+            v = [0.0, var.lb, var.ub, 0, 0, var.Obj]
+            V.append(v)
+        self.V = V
+        # self.V = torch.tensor(V, dtype=torch.float32)
+        C = []
+        for i in range(self.A.shape[0]):
+            # C.append(self.A.getcol(i).nonzero()[0].tolist())
+            c = [self.RHS[i], 0, 0, 0]
+            sense = self.SENSE[i]
+            if sense == '<':
+                c[2] = 1
+            elif sense == '>':
+                c[3] = 1
+            else:
+                c[1] = 1
+            C.append(c)
+        self.C = C
+        # self.C = torch.tensor(C, dtype=torch.float32)
+
+        
     
     def master_problem(self):
         # Create the LP relaxation model
@@ -121,16 +153,30 @@ class CuttingPlaneMethod:
 
         if self.lp_relaxation.status == GRB.OPTIMAL:
             # check if the solution is integer
+            self.Cand = []
             self.non_integer_vars[self.iteration] = {}
             self.non_binary_vars[self.iteration] = {}
             for v in self.integer_vars:
                 relaxed_value = self.lp_relaxation.getVarByName(v.varName).x
+                pos = self.varName_map_position[v.varName]
+                self.V[pos][0] = relaxed_value
+                self.V[pos][4] = 1
                 if not math.isclose(relaxed_value, round(relaxed_value), abs_tol=1e-6):
                     self.non_integer_vars[self.iteration][v.varName] = abs(relaxed_value - round(relaxed_value))
+                    self.Cand.append(v.varName)
             for v in self.binary_vars:
                 relaxed_value = self.lp_relaxation.getVarByName(v.varName).x
+                pos = self.varName_map_position[v.varName]
+                self.V[pos][0] = relaxed_value
+                self.V[pos][3] = 1
                 if not math.isclose(relaxed_value, round(relaxed_value)):
                     self.non_binary_vars[self.iteration][v.varName] = abs(relaxed_value - round(relaxed_value))
+                    self.Cand.append(v.varName)
+            if len(self.non_integer_vars[self.iteration]) == 0 and len(self.non_binary_vars[self.iteration]) == 0:
+                self.OPT = True
+            
+            for v in self.variables:
+                self.V[self.varName_map_position[v.varName]][0] = self.lp_relaxation.getVarByName(v.varName).x
         self.iteration += 1
 
     def cut_generation(self):
@@ -245,7 +291,10 @@ class CuttingPlaneMethod:
             print(f'cglp status: {cglp.status}')
             return None
 
-    def print_iteration_info(self, cut_time, iteration_time, overall):
+    def print_iteration_info(self, cut_time = 0.0, iteration_time = 0.0, overall = 0.0):
+        if self.OPT == True:
+            print(f'---------------------------------------------------------------------------------------------------------------------------------')
+            print('Optimality of MIP has been established!')
         if self.iteration == 1:
             print(f'This problem has {len(self.integer_vars)} integer variables and {len(self.binary_vars)} binary variables.')
             print(f'The optimal value of LP relaxation is {self.lp_obj_value[self.iteration-1]}.')

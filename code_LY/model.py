@@ -129,11 +129,11 @@ class att_block(torch.nn.Module):
         v1t=v1.repeat(1,self.multi_head)
         c1t=c1.repeat(1,self.multi_head)
         
-        #C to V
+        #V to C
         c2=self.norm11(self.att1(A,c1t,v1t)+c1t)
         c2=self.norm12(c2+self.att_for1(c2))
         
-        #V to C
+        #C to V
         v2=self.norm21(self.att2(AT,v1t,c2)+v1t)
         v2=self.norm22(v2+self.att_for1(v2))
         #end of attention block
