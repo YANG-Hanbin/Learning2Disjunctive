@@ -12,7 +12,6 @@ There are three primary algorithms explored:
        - Two methods for **variable selection**:
          - *Maximum Fractionality Rule* (completed)
          - Machine Learning-based Approach (<font color="red">Waiting</font>)
-
 2. **Naive CPT Algorithm with Fixed Number of Branching Variables:**
 
    - You can find the implementation in `naive_CPT_alg.ipynb`.
@@ -21,8 +20,13 @@ There are three primary algorithms explored:
      - Two approaches for **variable selection**:
        - *Maximum Fractionality Rule* (completed)
        - Machine Learning-based Method (<font color="red">Waiting</font>)
-
 3. **Branch-and-Bound (B&B) with Multi-term Disjunctive Cuts (<font color="red">Waiting</font>):**
 
-   - This part of the project is currently under development and will be addressed in the future.
+   - This part of the project is currently is developed:
+     - Variable Selection:
+       - *Maximum Fractionality Rule*
+     - Node Selection:
+       - *Best Bound Rule*
+       - *Deepest Node First Rule(<font color="red">Waiting</font>)*
+       - Machine Learning-based Method(<font color="red">Waiting</font>)
 

@@ -51,9 +51,6 @@ class CuttingPlaneMethod:
         self.cglp_TimeLimit = cglp_TimeLimit
         self.cglp_MIPFocus = cglp_MIPFocus
         # initialize NN parameters
-        self.C = None
-        self._A = None
-        self.V = None
         self.Cand = None    
          # intialize the instance
         self.readin()         
@@ -64,7 +61,7 @@ class CuttingPlaneMethod:
         self.mipModel = gp.read(ins_dir)
         self.variables = self.mipModel.getVars()
         self.A = self.mipModel.getA()
-        self._A = deepcopy(self.mipModel.getA())
+        # self._A = deepcopy(self.mipModel.getA())
         self.RHS = self.mipModel.getAttr('RHS')
         self.SENSE = self.mipModel.getAttr('Sense')
         self.LB = self.mipModel.getAttr('LB')
@@ -115,31 +112,7 @@ class CuttingPlaneMethod:
         # self.mipModel.Params.StrongCGCuts = 0
         self.lp_relaxation = self.mipModel.relax()
         self.lp_relaxation.update()
-
-        # preprocessing for NN models
-        V = []
-        for varName in self.varName:
-            var = self.mipModel.getVarByName(varName)
-            v = [0.0, var.lb, var.ub, 0, 0, var.Obj]
-            V.append(v)
-        self.V = V
-        # self.V = torch.tensor(V, dtype=torch.float32)
-        C = []
-        for i in range(self.A.shape[0]):
-            # C.append(self.A.getcol(i).nonzero()[0].tolist())
-            c = [self.RHS[i], 0, 0, 0]
-            sense = self.SENSE[i]
-            if sense == '<':
-                c[2] = 1
-            elif sense == '>':
-                c[3] = 1
-            else:
-                c[1] = 1
-            C.append(c)
-        self.C = C
-        # self.C = torch.tensor(C, dtype=torch.float32)
-
-        
+          
     
     def master_problem(self):
         # Create the LP relaxation model
@@ -158,25 +131,17 @@ class CuttingPlaneMethod:
             self.non_binary_vars[self.iteration] = {}
             for v in self.integer_vars:
                 relaxed_value = self.lp_relaxation.getVarByName(v.varName).x
-                pos = self.varName_map_position[v.varName]
-                self.V[pos][0] = relaxed_value
-                self.V[pos][4] = 1
                 if not math.isclose(relaxed_value, round(relaxed_value), abs_tol=1e-6):
                     self.non_integer_vars[self.iteration][v.varName] = abs(relaxed_value - round(relaxed_value))
                     self.Cand.append(v.varName)
             for v in self.binary_vars:
                 relaxed_value = self.lp_relaxation.getVarByName(v.varName).x
-                pos = self.varName_map_position[v.varName]
-                self.V[pos][0] = relaxed_value
-                self.V[pos][3] = 1
                 if not math.isclose(relaxed_value, round(relaxed_value)):
                     self.non_binary_vars[self.iteration][v.varName] = abs(relaxed_value - round(relaxed_value))
                     self.Cand.append(v.varName)
             if len(self.non_integer_vars[self.iteration]) == 0 and len(self.non_binary_vars[self.iteration]) == 0:
                 self.OPT = True
-            
-            for v in self.variables:
-                self.V[self.varName_map_position[v.varName]][0] = self.lp_relaxation.getVarByName(v.varName).x
+
         self.iteration += 1
 
     def cut_generation(self):
