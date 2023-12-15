@@ -8,6 +8,7 @@ import os
 import math
 import time
 from tqdm import tqdm
+from alive_progress import alive_bar
 
 from opt_alg.cutting_plane_framework import CuttingPlaneMethod
 from rl_alg.model import var_sorter
@@ -26,10 +27,10 @@ class NaiveCuttingPlaneTreeAlgorithm(CuttingPlaneMethod):
         # model
         self.pred=var_sorter(v_size=6,c_size=3,sample_sizes=[64],multi_head=2,natt=2)
         # optimizer
-        self.optimizer = torch.optim.Adam(self.pred.parameters(),lr=1e-4)
+        self.optimizer = torch.optim.Adam(self.pred.parameters(),lr=5e-5)
         # training params
         self.training = training
-        self.lastLogit = None
+        self.lastLogit = []
         self.save_interval = save_interval
         if not os.path.isdir('./models'): # create model folder if there is no models folder
             os.mkdir('./models')
@@ -38,7 +39,7 @@ class NaiveCuttingPlaneTreeAlgorithm(CuttingPlaneMethod):
             '''get latest checkpoint'''
             #  resume model training from the latest checkpoint, allowing the training to continue from the state it was in when interrupted, rather than starting over from the beginning.
             ckps = os.listdir('./models') # get all ckps (files with .mdl extension) in this directory
-            ckps = [f for f in ckps if f.endswith('.mdl')]  
+            ckps = [f for f in ckps if f.endswith('.mdl')] 
             if len(ckps) > 0:
                 ckps.sort(key=lambda x:int(x.replace('.mdl','').split('_')[-1]))
                 tar_name = f'./models/{ckps[-1]}'
@@ -67,31 +68,23 @@ class NaiveCuttingPlaneTreeAlgorithm(CuttingPlaneMethod):
         self.A_to_sparse_tensor()
 
         #variable feature update
-        if self.col_feature is None:
-            #first time constructing 
-            self.col_feature = [None] * len(self.variables)
-            for var in self.variables:   
-                rel_sol_indx= self.varName_map_position[var.VarName]
-                col_value = self.lp_sol[rel_sol_indx]
-                # if abs(col_val-round(col_val,0))>1e-6 and (vtp=='B' or vtp=='I'):
-                #     cand.append(col_var.VarName)
-                
-                #compose features
-                isBin=0
-                isInt=0
-                if var.VType == 'I':
-                    isInt=1
-                elif var.VType == 'B':
-                    isBin=1
-                # ---- [lp_sol, LB, UB, isBin, isInt, reduced_cost, lp_obj]
-                self.col_feature[rel_sol_indx] = [col_value, self.LB[rel_sol_indx], self.UB[rel_sol_indx], isBin, isInt, var.Obj]  
-            self.col_feature=torch.as_tensor(self.col_feature, dtype=torch.float32)  
-        else:
-            # not first time, update bound and col_val
-            for var in self.variables:   
-                rel_sol_indx = self.varName_map_position[var.VarName]
-                col_val = self.lp_sol[rel_sol_indx]
-                self.col_feature[rel_sol_indx][0] = col_val
+        col_feat = [None] * len(self.variables)
+        for var in self.variables:   
+            rel_sol_indx= self.varName_map_position[var.VarName]
+            col_value = self.lp_sol[rel_sol_indx]
+            # if abs(col_val-round(col_val,0))>1e-6 and (vtp=='B' or vtp=='I'):
+            #     cand.append(col_var.VarName)
+            
+            #compose features
+            isBin=0
+            isInt=0
+            if var.VType == 'I':
+                isInt=1
+            elif var.VType == 'B':
+                isBin=1
+            # ---- [lp_sol, LB, UB, isBin, isInt, reduced_cost, lp_obj]
+            col_feat[rel_sol_indx] = [col_value, self.LB[rel_sol_indx], self.UB[rel_sol_indx], isBin, isInt, var.Obj]  
+        col_feat=torch.as_tensor(col_feat, dtype=torch.float32)  
                 
         #constraint feature update
         row_index_map={}
@@ -111,9 +104,26 @@ class NaiveCuttingPlaneTreeAlgorithm(CuttingPlaneMethod):
             row_feat.append([constr.RHS, sense1, sense2]) # [RHS, SENSE]
         row_feat = torch.as_tensor(row_feat, dtype=torch.float32)
         cand = torch.as_tensor([self.varName_map_position[x] for x in self.Cand])
-        return  row_feat, row_index_map, cand
-        
+        return  col_feat, row_feat, row_index_map, cand
     
+    
+    def getPred(self):
+        number_of_candidates = self.number_branch_var  
+        # get feature, candidates are stored in self.Cand
+        col_feat, row_feat, row_index_map, cand = self.feat_extract()
+        
+        # calling model to do prediction
+        self.optimizer.zero_grad()
+        self.lastLogit.append(self.pred(self.tensorA, col_feat, row_feat))
+        decision = torch.argsort(torch.index_select(self.lastLogit[-1], 0, cand),descending=True)[:number_of_candidates]
+        self.branchVar[self.iteration-1] = {}
+        for i in decision:
+            tar_var = self.Cand[i]
+            # ori_ind = cand[i].item()
+            self.branchVar[self.iteration-1][tar_var] = self.lastLogit[-1][i] # self.lp_sol[ori_ind]
+            
+            
+            
     def variable_selection(self, ifTrain = True, variable_selection_way = 'MFR'):
         # choose the variable to branch
         #TODO: add criteria to select either explore or exploit
@@ -122,19 +132,21 @@ class NaiveCuttingPlaneTreeAlgorithm(CuttingPlaneMethod):
             # the number of variables that are chosen to branch, so the number of nodes in the branching tree is 2^number_of_candidates            
             number_of_candidates = self.number_branch_var  
             # get feature, candidates are stored in self.Cand
-            row_feat, row_index_map, cand = self.feat_extract()
+            col_feat, row_feat, row_index_map, cand = self.feat_extract()
             
             # calling model to do prediction
             if ifTrain:
                 self.optimizer.zero_grad()
-            self.lastLogit = self.pred(self.tensorA, self.col_feature, row_feat)
-            decision = torch.argsort(torch.index_select(self.lastLogit, 0, cand),descending=True)[:number_of_candidates]
+            self.lastLogit.append(self.pred(self.tensorA, col_feat, row_feat))
+            decision = torch.argsort(torch.index_select(self.lastLogit[-1], 0, cand),descending=True)[:number_of_candidates]
             self.branchVar[self.iteration-1] = {}
             for i in decision:
                 tar_var = self.Cand[i]
                 # ori_ind = cand[i].item()
-                self.branchVar[self.iteration-1][tar_var] = self.lastLogit[i] # self.lp_sol[ori_ind]
+                self.branchVar[self.iteration-1][tar_var] = self.lastLogit[-1][i] # self.lp_sol[ori_ind]
         elif variable_selection_way == 'MFR':
+            if ifTrain:
+                self.getPred()
             # heuristic: Maximum Fractionality Rule
             number_of_candidates = self.number_branch_var                                                                       # the number of variables that are chosen to branch, so the number of nodes in the branching tree is 2^number_of_candidates
             number_of_noninteger = len(self.non_integer_vars[self.iteration - 1])
@@ -205,8 +217,9 @@ class NaiveCuttingPlaneTreeAlgorithm(CuttingPlaneMethod):
         self.nodeSet[0]['trace'] = []
         self.branching_tree_building(0, 0, varInfo) 
     
-    def solve(self, ifTrain = True, variable_selection_way = 'RL'):
+    def solve(self, ifTrain = False, variable_selection_way = 'RL'):
         time_init = time.time()
+        f=open(f'./logs/eval_train_{variable_selection_way}.log','w')
         while self.iteration <= self.maxIteration:
             iter_begin = time.time()
             self.master_problem()
@@ -221,7 +234,10 @@ class NaiveCuttingPlaneTreeAlgorithm(CuttingPlaneMethod):
             overall = iter_end - time_init
             iteration_time = iter_end - iter_begin
             cut_time = iter_end - ready_to_cut
+            # print(self.lp_obj_value)
+            f.write(f'iter:{self.iteration} lpobj:{self.lp_obj_value[self.iteration-1] }\n')
             self.print_iteration_info(cut_time, iteration_time, overall)
+        f.close()
 
 
     def train_model_each_iteration(self):
@@ -247,7 +263,7 @@ class NaiveCuttingPlaneTreeAlgorithm(CuttingPlaneMethod):
                 # record reward
                 self.log_file.write(f'iter:{self.iteration} reward:{improvement}\n')
                 # update gradient and update model
-                regret = torch.sum(self.lastLogit * ((-1.0) * improvement + 1e-6))
+                regret = torch.sum(self.lastLogit[-1] * ((-1.0) * improvement + 1e-6))
                 regret.backward()
                 self.optimizer.step()
                 # check if need to save model
@@ -265,8 +281,11 @@ class NaiveCuttingPlaneTreeAlgorithm(CuttingPlaneMethod):
                     self.lp_obj_value = {}
         '''
         for i in range(10):
-            with tqdm(total=int(num_episodes / 10), desc='Iteration %d' % i) as pbar:
+            # with tqdm(total=int(num_episodes / 10), desc='Iteration %d' % i) as pbar:
+            with alive_bar(int(num_episodes / 10),title=f'Iteration {i}',bar='bubbles',spinner='arrow') as pbar:
                 for i_episode in range(int(num_episodes / 10)):
+                    t_imp=0
+                    regret=None
                     time_init = time.time()
                     self.iteration = 0
                     self.lp_relaxation = self.mipModel.relax()
@@ -276,7 +295,7 @@ class NaiveCuttingPlaneTreeAlgorithm(CuttingPlaneMethod):
                     while self.iteration <= self.maxIteration:
                         iter_begin = time.time()
                         self.master_problem()
-                        self.variable_selection()
+                        self.variable_selection(variable_selection_way='RL')
                         self.branching_tree()
                         ready_to_cut = time.time()
                         self.cut_generation()
@@ -285,18 +304,82 @@ class NaiveCuttingPlaneTreeAlgorithm(CuttingPlaneMethod):
                         iteration_time = iter_end - iter_begin
                         cut_time = iter_end - ready_to_cut
                         self.print_iteration_info(cut_time, iteration_time, overall)
+                        ind=[self.varName_map_position[x] for x in self.Cand]
                         
+                        # compute improvement
+                        improvement = abs(self.lp_obj_value[self.iteration - 1] - self.lp_obj_value[0]) / self.lp_obj_value[0] * 100
+                        t_imp+=improvement
+                        # record reward
+                        self.log_file.write(f'episode:{i * 10 + i_episode + 1} reward:{improvement}\n')
+                        # update gradient and update model
+                        if regret is None:
+                            regret = torch.sum(self.lastLogit[-1][ind]* ((-1.0) * improvement + 0.1))
+                        else:
+                            regret += torch.sum(self.lastLogit[-1][ind] * ((-1.0) * improvement + 0.1))
+                    regret.backward()
+                    self.optimizer.step()
+                    print('***** Gradient Applied *****')
+                    # check if need to save model
+                    state = {'model':self.pred.state_dict(),'optimizer':self.optimizer.state_dict(),'nepoch':self.ckp_starter+i_episode+int(num_episodes / 10)*i}
+                    torch.save(state,f'./models/ckp_{i_episode+self.ckp_starter+int(num_episodes / 10)*i}.mdl')
+                    pbar(1)        
+                    self.log_file.write(f'average improvement:{t_imp/self.maxIteration}\n')
+                    
+                    
+                    
+                    
+    def train_model_each_round_warmStart(self, num_episodes = 500):
+        #TODO: train model after each round, not each iteration; and for each round, we need to initialize the model (cuts, variables, etc.):
+        '''         # Initialize the model:
+                    self.iteration = 0
+                    self.lp_relaxation = self.mipModel.relax()
+                    self.lp_relaxation.update()
+                    self.coefList = {}
+                    self.lp_obj_value = {}
+        '''
+        # with tqdm(total=int(num_episodes / 10), desc='Iteration %d' % i) as pbar:
+        with alive_bar(int(num_episodes),title=f'Iteration WarmStart',bar='bubbles',spinner='arrow') as pbar:
+            for i_episode in range(int(num_episodes)):
+                regret=None
+                time_init = time.time()
+                self.iteration = 0
+                self.lp_relaxation = self.mipModel.relax()
+                self.lp_relaxation.update()
+                self.coefList = {}
+                self.lp_obj_value = {}
+                while self.iteration <= self.maxIteration:
+                    iter_begin = time.time()
+                    self.master_problem()
+                    self.variable_selection(variable_selection_way='MFR')
+                    self.branching_tree()
+                    ready_to_cut = time.time()
+                    self.cut_generation()
+                    iter_end = time.time()
+                    overall = iter_end - time_init
+                    iteration_time = iter_end - iter_begin
+                    cut_time = iter_end - ready_to_cut
+                    self.print_iteration_info(cut_time, iteration_time, overall)
                     # compute improvement
                     improvement = abs(self.lp_obj_value[self.iteration - 1] - self.lp_obj_value[0]) / self.lp_obj_value[0] * 100
                     # record reward
-                    self.log_file.write(f'episode:{i * 10 + i_episode + 1} reward:{improvement}\n')
+                    self.log_file.write(f'Warm Start----episode:{self.iteration} reward:{improvement}\n')
                     # update gradient and update model
-                    regret = torch.tensor(-improvement, requires_grad=True)
-                    regret.backward()
-                    self.optimizer.step()
-                    # check if need to save model
-                    # if (self.iteration-1) % self.save_interval == 0 and self.iteration-1 != 0:
-                    #     state = {'model':self.pred.state_dict(),'optimizer':self.optimizer.state_dict(),'nepoch':self.ckp_starter+self.iteration-1}
-                    #     torch.save(state,f'./models/ckp_{self.iteration+self.ckp_starter-1}.mdl')
-                    # pbar.update(1)        
+                    if regret is None:
+                        tz = torch.zeros(self.lastLogit[-1].shape)
+                        indc=[self.varName_map_position[x] for x in self.branchVar[self.iteration-1]]
+                        tz[indc] = 1.0
+                        regret = torch.nn.functional.cross_entropy(self.lastLogit[-1],tz)
+                    else:
+                        tz = torch.zeros(self.lastLogit[-1].shape)
+                        indc=[self.varName_map_position[x] for x in self.branchVar[self.iteration-1]]
+                        tz[indc] = 1.0
+                        regret = torch.nn.functional.cross_entropy(self.lastLogit[-1],tz)
+                regret.backward()
+                self.optimizer.step()
+                print('***** Gradient Applied *****')
+                # check if need to save model
+                # state = {'model':self.pred.state_dict(),'optimizer':self.optimizer.state_dict(),'nepoch':self.ckp_starter+i_episode+int(num_episodes / 10)*i}
+                # torch.save(state,f'./models/ckp_{i_episode+self.ckp_starter+int(num_episodes / 10)*i}.mdl')
+                pbar(1)        
+     
      

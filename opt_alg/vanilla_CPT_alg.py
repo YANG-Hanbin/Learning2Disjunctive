@@ -10,12 +10,12 @@ import time
 import random
 
 from opt_alg.cutting_plane_framework import CuttingPlaneMethod
-from rl_alg.model import var_sorter
 
 class CuttingPlaneTreeAlgorithm(CuttingPlaneMethod):
     def __init__(self, instanceName, maxIteration=100, OutputFlag=0, Threads=1, MIPGap=0.0, TimeLimit=3600, MIPFocus=2, cglp_OutputFlag=0, cglp_Threads=1, cglp_MIPGap=0.0, cglp_TimeLimit=100, cglp_MIPFocus=0, addCutToMIP=False, number_branch_var=2, normalization='SNC', additional_param=None):
         super().__init__(instanceName, maxIteration, OutputFlag, Threads, MIPGap, TimeLimit, MIPFocus, cglp_OutputFlag, cglp_Threads, cglp_MIPGap, cglp_TimeLimit, cglp_MIPFocus, addCutToMIP, number_branch_var, normalization)
         self.additional_param = additional_param
+        self.logf=open(f'./logs/vanilla.log','w')
     
     def locate_node(self):
         for node_index, node in self.nodeSet.items():
@@ -118,3 +118,5 @@ class CuttingPlaneTreeAlgorithm(CuttingPlaneMethod):
             iteration_time = iter_end - iter_begin
             cut_time = iter_end - ready_to_cut
             self.print_iteration_info(cut_time, iteration_time, overall)
+            # record reward
+            self.logf.write(f'episode:{self.iteration} obj:{self.lp_obj_value[self.iteration - 1]}\n')
