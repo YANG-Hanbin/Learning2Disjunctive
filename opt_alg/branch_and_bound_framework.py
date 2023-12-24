@@ -13,7 +13,7 @@ import random
 class BranchAndBoundFramework:
     def __init__(self, instanceName, maxIteration=100, OutputFlag=0, Threads=1, MIPGap=0.0, TimeLimit=3600, MIPFocus=2,
                  cglp_OutputFlag=0, cglp_Threads=1, cglp_MIPGap=0.0, cglp_TimeLimit=100, cglp_MIPFocus=0,
-                 addCutToMIP=False, number_branch_var=2, normalization='SNC'):
+                 addCutToMIP=False, number_branch_var=2, normalization='SNC', nodeSelectionModel = 'DNFR'):
         self.iteration = 0
         self.maxIteration = maxIteration
         self.maxBound = 1e5
@@ -63,6 +63,7 @@ class BranchAndBoundFramework:
         self.upper_bound = {'node': 0, 'value': math.inf}
         self.lower_bound_sol = None  # (for minimization problem) the nodal solution corresponding to the lower bound in the branch-and-bound tree
         self.incumbent = None
+        self.nodeSelectionModel = nodeSelectionModel # 'DNFR', 'BBR'
         # intialize the instance
         self.readin()
 
@@ -170,22 +171,39 @@ class BranchAndBoundFramework:
             self.branch_node = None
             lower_bound = math.inf
             upper_bound = -math.inf
-            if self.modelSense == 'min':
-                for node_index, node in self.branch_bound_tree.items():
-                    if node['value'] <= lower_bound:
+            depth = 0
+            for node_index, node in self.branch_bound_tree.items():
+                if self.nodeSelectionModel == 'BBR':
+                    if self.modelSense == 'min':
+                        if node['value'] <= lower_bound:
+                            self.branch_node = node_index
+                            lower_bound = node['value']
+                            self.lower_bound = {'node': node_index, 'value': lower_bound}
+                            self.lower_bound_sol = node['sol']
+                    else:
+                        if node['value'] >= upper_bound:
+                            self.branch_node = node_index
+                            upper_bound = node['value']
+                            self.upper_bound = {'node': node_index, 'value': upper_bound}
+                            self.lower_bound_sol = node['sol']
+
+                # The second rule -- Deepest Node First Rule
+                elif self.nodeSelectionModel == 'DNFR':
+                    if self.modelSense == 'min':
+                        if node['value'] <= lower_bound:
+                            lower_bound = node['value']
+                            self.lower_bound = {'node': node_index, 'value': lower_bound}
+                            self.lower_bound_sol = node['sol']
+                    else:
+                        if node['value'] >= upper_bound:
+                            upper_bound = node['value']
+                            self.upper_bound = {'node': node_index, 'value': upper_bound}
+                            self.lower_bound_sol = node['sol']
+
+                    if len(node['trace']) >= depth:
                         self.branch_node = node_index
-                        lower_bound = node['value']
-                        self.lower_bound = {'node': node_index, 'value': lower_bound}
-                        self.lower_bound_sol = node['sol']
-            else:
-                for node_index, node in self.branch_bound_tree.items():
-                    if node['value'] >= upper_bound:
-                        self.branch_node = node_index
-                        upper_bound = node['value']
-                        self.upper_bound = {'node': node_index, 'value': upper_bound}
-                        self.lower_bound_sol = node['sol']
-            # TODO:: The second rule -- Deepest Node First Rule
-            # self.branch_node = max(self.branch_bound_tree.keys())
+                        
+                        
 
     def branch_variable_selection(self):
         # TODO:: add ML model to choose the variable to branch
@@ -287,12 +305,6 @@ class BranchAndBoundFramework:
                 newCut += self.subproblem.getVarByName(var) * piBest[var]
             self.subproblem.addConstr(newCut >= 0.0)
 
-            # cutLinExpr = cut['LinExpr']
-            # self.subproblem.addConstr(cutLinExpr>=0.0)
-
-        # TODO:: Check the feasibility of the following cut-appending way
-        # for i, cut in cutSet.items():
-        #     self.subproblem.addConstr(newCut>=0.0)
         self.subproblem.update()
         self.subproblem.optimize()
         if self.subproblem.status == GRB.INFEASIBLE:
@@ -373,6 +385,7 @@ class BranchAndBoundFramework:
                 gp.quicksum(pi[v] * self.lower_bound_sol[self.varName_map_position[v]] for v in self.varName) - pi0,
                 GRB.MINIMIZE)
         else:
+            self.nodeSelectionModel = 'BBR'
             cglp.setObjective(
                 gp.quicksum(pi[v] * self.incumbent[self.varName_map_position[v]] for v in self.varName) - pi0,
                 GRB.MINIMIZE)
