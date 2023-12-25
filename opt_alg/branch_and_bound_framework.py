@@ -13,7 +13,7 @@ import random
 class BranchAndBoundFramework:
     def __init__(self, instanceName, maxIteration=100, OutputFlag=0, Threads=1, MIPGap=0.0, TimeLimit=3600, MIPFocus=2,
                  cglp_OutputFlag=0, cglp_Threads=1, cglp_MIPGap=0.0, cglp_TimeLimit=100, cglp_MIPFocus=0,
-                 addCutToMIP=False, number_branch_var=2, normalization='SNC', nodeSelectionModel = 'DNFR'):
+                 addCutToMIP=False, nodeNumber=3, normalization='SNC', nodeSelectionModel = 'DNFR', cglpNodeSelectionModel = 'parentnode-based'):
         self.iteration = 0
         self.maxIteration = maxIteration
         self.maxBound = 1e5
@@ -36,8 +36,10 @@ class BranchAndBoundFramework:
         self.varName_map_position = {}
         # Cut List
         self.normalization = normalization
-        self.number_branch_var = number_branch_var
+        # self.number_branch_var = number_branch_var
+        self.nodeNumber = nodeNumber  # the number of nodes to generate cuts
         self.nodeSet = {}  # nodeSet[node] <- (LB, UB)
+        self.cglpNodeSelectionModel = cglpNodeSelectionModel # 'bound-based', 'RL-based', 'parentnode-based' in CGLP
         self.addCutToMIP = addCutToMIP
         self.branchVar = {}  # branchVar[iter] <- var
         self.coefList = {}  # coeflist[iter] <- (subg, 1) or ( - piBest, pi0Best)
@@ -63,7 +65,7 @@ class BranchAndBoundFramework:
         self.upper_bound = {'node': 0, 'value': math.inf}
         self.lower_bound_sol = None  # (for minimization problem) the nodal solution corresponding to the lower bound in the branch-and-bound tree
         self.incumbent = None
-        self.nodeSelectionModel = nodeSelectionModel # 'DNFR', 'BBR'
+        self.nodeSelectionModel = nodeSelectionModel # 'DNFR', 'BBR' in branch-&-bound
         # intialize the instance
         self.readin()
 
@@ -312,6 +314,10 @@ class BranchAndBoundFramework:
             del self.branch_bound_tree[node_index]
             print(f'fathom node {node_index} by infeasibility')
             return
+        if self.cglpNodeSelectionModel == 'parentnode-based':
+            self.A = self.subproblem.getA()
+            self.RHS = self.subproblem.getAttr('RHS')
+            self.SENSE = self.subproblem.getAttr('Sense')
 
         node['sol'] = self.subproblem.x
         node['value'] = self.subproblem.objVal
@@ -350,27 +356,40 @@ class BranchAndBoundFramework:
     def cut_generation_node_selection(self):
         # TODO:: Using RL to selection a set of nodes to generate cuts
         # here we use up to 3 most promising nodes to generate cut
-        node_values = [(node_index, node['value']) for node_index, node in self.branch_bound_tree.items()]
-        node_values.sort(key=lambda x: x[1])
-        nodeSet = [node_index for node_index, value in node_values[:3]]
-        # nodeSet = self.branch_bound_tree.keys() 
-
         self.nodeSet = {}
-        for node_index in nodeSet:
-            # add bounds to this node
-            node = {}
-            tmp_LB = deepcopy(self.LB)
-            tmp_UB = deepcopy(self.UB)
-            for item in self.branch_bound_tree[node_index]['trace']:
-                varName, sense, bound = item
-                pos = self.varName_map_position[varName]
-                if sense == '<':
-                    tmp_UB[pos] = min(tmp_UB[pos], bound)
-                elif sense == '>':
-                    tmp_LB[pos] = max(tmp_LB[pos], bound)
-            node['LB'] = tmp_LB
-            node['UB'] = tmp_UB
-            self.nodeSet[node_index] = node
+        nodeSet = None
+        if self.cglpNodeSelectionModel == 'bound-based':
+            node_values = [(node_index, node['value']) for node_index, node in self.branch_bound_tree.items()]
+            node_values.sort(key=lambda x: x[1])
+            nodeSet = [node_index for node_index, value in node_values[:self.nodeNumber]]
+            # nodeSet = self.branch_bound_tree.keys() 
+        elif self.cglpNodeSelectionModel == 'parentnode-based':
+            right_node_ind = max(self.branch_bound_tree.keys())
+            left_node_ind = right_node_ind - 1 
+            nodeSet = [left_node_ind, right_node_ind]
+        elif self.cglpNodeSelectionModel == 'RL-based':
+            pass
+
+        # add bounds to nodes in nodeSet
+        if nodeSet != None:
+            for node_index in nodeSet:
+                    # add bounds to this node
+                    node = {}
+                    tmp_LB = deepcopy(self.LB)
+                    tmp_UB = deepcopy(self.UB)
+                    for item in self.branch_bound_tree[node_index]['trace']:
+                        varName, sense, bound = item
+                        pos = self.varName_map_position[varName]
+                        if sense == '<':
+                            tmp_UB[pos] = min(tmp_UB[pos], bound)
+                        elif sense == '>':
+                            tmp_LB[pos] = max(tmp_LB[pos], bound)
+                    node['LB'] = tmp_LB
+                    node['UB'] = tmp_UB
+                    self.nodeSet[node_index] = node
+        else:
+            print(f'nodeSet is None')
+            exit()
 
     def cut_generation(self):
         cglp = gp.Model("cglp")
@@ -390,14 +409,12 @@ class BranchAndBoundFramework:
                 gp.quicksum(pi[v] * self.incumbent[self.varName_map_position[v]] for v in self.varName) - pi0,
                 GRB.MINIMIZE)
 
-        num_constrs, num_vars = self.A.shape[0], self.A.shape[
-            1]  # self.mipModel.getAttr('NumConstrs'), self.mipModel.getAttr('NumVars')
+        num_constrs, num_vars = self.A.shape[0], self.A.shape[1]  # self.mipModel.getAttr('NumConstrs'), self.mipModel.getAttr('NumVars')
         cglp_lambda = {}
         cglp_mu = {}
         cglp_v = {}
         # cglp normalization constraint
         normalizationConstraint = gp.LinExpr(-1.0)
-
         for node_index, node in self.nodeSet.items():
             cglp_lambda[node_index] = []
             cglp_mu[node_index] = []
