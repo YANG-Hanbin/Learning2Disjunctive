@@ -176,6 +176,7 @@ class BranchAndBoundFramework:
             depth = 0
             for node_index, node in self.branch_bound_tree.items():
                 if self.nodeSelectionModel == 'BBR':
+                    # update (lower) bound & deepest node
                     if self.modelSense == 'min':
                         if node['value'] <= lower_bound:
                             self.branch_node = node_index
@@ -191,6 +192,7 @@ class BranchAndBoundFramework:
 
                 # The second rule -- Deepest Node First Rule
                 elif self.nodeSelectionModel == 'DNFR':
+                    # update (lower) bound
                     if self.modelSense == 'min':
                         if node['value'] <= lower_bound:
                             lower_bound = node['value']
@@ -201,12 +203,10 @@ class BranchAndBoundFramework:
                             upper_bound = node['value']
                             self.upper_bound = {'node': node_index, 'value': upper_bound}
                             self.lower_bound_sol = node['sol']
-
+                    # update deepest ndoe
                     if len(node['trace']) >= depth:
                         self.branch_node = node_index
-                        
-                        
-
+                                         
     def branch_variable_selection(self):
         # TODO:: add ML model to choose the variable to branch
         # according to self.branch_node, choose a self.branch_variable 
