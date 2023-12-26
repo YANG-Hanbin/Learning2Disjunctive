@@ -13,7 +13,7 @@ from opt_alg.branch_and_bound_framework import BranchAndBoundFramework
 
 
 
-class BranchAndDisjunctiveCut(BranchAndBoundFramework):
+class BranchAndDisjunctiveCutAlgorithm(BranchAndBoundFramework):
     def __init__(self, *args, number_branch_var = 2, number_branch_node = 2, **kwargs):
         # Initialize parent class with all arguments passed
         super().__init__(*args, **kwargs)
