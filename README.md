@@ -22,7 +22,7 @@ There are three primary algorithms explored:
        - *Maximum Fractionality Rule* (completed)
        - Machine Learning-based Method
 
-3. **Branch-and-Bound (B&B) with Multi-term Disjunctive Cuts:**
+3. **Branch-and-CPT Algorithm:**
 
    This part of the project is currently is developed:
 
@@ -32,13 +32,10 @@ There are three primary algorithms explored:
 
        1. `BBR`: Best Bound Rule
 
-       2. `DNFR`: *Deepest Node First Rule*
-
+       2. `DNFR`: *Deepest Node First Rule (default after an incumbent is founded)*
      - Branching Variable Selection: 
-       1. *Maximum Fractionality Rule*: according to the solution info in the selected node
-       2. RL-based method(<font color="red">Waiting</font>)
-       3. <font color="red">New Rules</font>
-
+       1. *Maximum Fractionality Rule*: according to the solution info in the selected node (default)
+       2. RL-based method (<font color="red">Partially solved in Naive-CPT algorithm</font>) 
    - Multi-term Disjunctive Cut Framework
 
      - CGLP Node Selection: `cglpNodeSelectionModel`
@@ -46,9 +43,8 @@ There are three primary algorithms explored:
        1. `bound-based`: *use the nodes with the best bounds to generate cuts*
           - `nodeNumber`: the number of nodes used to generate cuts
 
-       2. `parent-based`: *use the nodes from the same parent node to generate cuts. Reason: inherit the cuts from previous iterations.*
+       2. `parentnode-based`: *use the nodes from the same parent node to generate cuts. Reason: inherit the cuts from previous iterations (default)*
           - Mainly use the new nodes generated in Branching procedures
 
        3. `RL-based`: Machine Learning-based Method(<font color="red">Waiting</font>)
-
 

@@ -58,7 +58,7 @@ class BranchAndBoundFramework:
         self.cglp_MIPFocus = cglp_MIPFocus
         # Branch and Bound Tree Info
         self.branch_bound_tree = {}  # 1. key: node_index <- value: (trace, cuts, subproblem's optimal sol and val); 2. we only record the leaf nodes
-        self.subproblem = None
+        self.bounding_problem = None
         self.branch_node = None  # we will do branching on variable self.branch_variable (varName) in the node self.branch_node
         self.branch_variable = None  # varName
         self.lower_bound = {'node': 0, 'value': - math.inf}  #
@@ -119,6 +119,7 @@ class BranchAndBoundFramework:
         self.lp_relaxation.update()
         self.variables = self.lp_relaxation.getVars()
         self.A = self.lp_relaxation.getA()
+        # print("Full Constraint Matrix A:\n", A.toarray())
         self.RHS = self.lp_relaxation.getAttr('RHS')
         self.SENSE = self.lp_relaxation.getAttr('Sense')
         self.modelSense = 'min' if self.mipModel.ModelSense == 1 else 'max'
@@ -140,8 +141,10 @@ class BranchAndBoundFramework:
 
             node['sol'] = self.lp_relaxation.x
             node['value'] = self.lp_relaxation.objVal
-            node['cuts'] = {}  # record all additional cuts
-            node['trace'] = []  # record all additional bounding constraints
+            node['cuts'] = {}  # to receive the new cut generated in cglp
+            node['trace'] = []  # to record all additional bounding constraints
+            node['cutA'] = None # to record the cut constraint matrix and RHS
+            node['cutRHS'] = None
 
             non_integer_vars = {}  # the sef of int varName that are fractional
             non_binary_vars = {}
@@ -162,19 +165,24 @@ class BranchAndBoundFramework:
             self.OPT = True
 
     def branch_node_selection(self):
-        # update self.branch_node in self.branch_bound_tree
+        """
+            Choose one node from the branch-and-bound tree to branch: 
+            The branching node is chosen according to the following rules:
+            - Best Bound Rule: for min problem, choose the node with the smallest lower bound; for max problem, choose the node with the largest upper bound
+            - Deepest Node First Rule
 
+            return self.branch_node
+        """
         if len(self.branch_bound_tree.keys()) == 1:
             self.branch_node = list(self.branch_bound_tree.keys())[0]
             self.lower_bound_sol = self.branch_bound_tree[self.branch_node]['sol']
         else:
-            # The first rule -- Best Bound Rule: for min problem, choose the node with the smallest lower bound; for
-            # max problem, choose the node with the largest upper bound
             self.branch_node = None
             lower_bound = math.inf
             upper_bound = -math.inf
             depth = 0
             for node_index, node in self.branch_bound_tree.items():
+                # The first rule -- Best Bound Rule: for min problem, choose the node with the smallest lower bound; for max problem, choose the node with the largest upper bound
                 if self.nodeSelectionModel == 'BBR':
                     # update (lower) bound & deepest node
                     if self.modelSense == 'min':
@@ -208,6 +216,13 @@ class BranchAndBoundFramework:
                         self.branch_node = node_index
                                          
     def branch_variable_selection(self):
+        """
+            Choose one branching variable for the branching node in the branch-and-bound tree: 
+            The branching variable is chosen according to the following rules:
+            - Choose the integer/binary variable that has the largest distance to the nearest integer (MFR)
+
+            return self.branch_variable
+        """
         # TODO:: add ML model to choose the variable to branch
         # according to self.branch_node, choose a self.branch_variable 
         # choose the variable to branch: Maximum Fractionality Rule
@@ -232,6 +247,9 @@ class BranchAndBoundFramework:
         self.branch_variable = maxKey
 
     def branching(self):
+        """
+            Branching on the variable self.branch_variable in the node self.branch_node.
+        """
         # create two new nodes with info in self.branch_node, del self.branch_node, update two new nodes with the
         # method self.nodal_problem
         node = self.branch_bound_tree[self.branch_node]  # father node
@@ -241,11 +259,15 @@ class BranchAndBoundFramework:
         left_node['cuts'] = deepcopy(node['cuts'])
         left_node['trace'] = deepcopy(node['trace'])
         left_node['trace'].append([self.branch_variable, '<', math.floor(node['sol'][pos])])  # x <= floor(xhat)
+        left_node['cutA'] = deepcopy(node['cutA'])
+        left_node['cutRHS'] = deepcopy(node['cutRHS'])
 
         right_node = {}
         right_node['cuts'] = deepcopy(node['cuts'])
         right_node['trace'] = deepcopy(node['trace'])
         right_node['trace'].append([self.branch_variable, '>', math.ceil(node['sol'][pos])])  # x >= ceil(xhat)
+        right_node['cutA'] = deepcopy(node['cutA'])
+        right_node['cutRHS'] = deepcopy(node['cutRHS'])
 
         left_node_ind = max(self.branch_bound_tree.keys()) + 1
         right_node_ind = left_node_ind + 1
@@ -256,6 +278,11 @@ class BranchAndBoundFramework:
         self.nodal_problem(right_node_ind)
 
     def fathom_by_bounding(self):
+        """
+            Fathom nodes by detecting the lower bound of the node.
+            =================================================================================================
+            If the lower bound > upper bound, then fathom the node.
+        """
         # fathom nodes
         if self.modelSense == 'min':
             upper_bound = self.upper_bound['value']
@@ -283,8 +310,18 @@ class BranchAndBoundFramework:
                         print(f'fathom node {node_index} by bounding')
 
     def nodal_problem(self, node_index):  # node_index is a new child node
-        # Create the nodal subproblem model
-        self.subproblem = self.lp_relaxation.copy()
+        """
+            Solve the bounding problem (i.e., the LP relaxation of the subproblem) in node: node_index.
+            In this node, we record the following information in the node:
+            - sol: the optimal solution of the bounding problem
+            - value: the optimal value of the bounding problem
+            - cuts: the set of cuts that are added to the bounding problem
+            - trace: the set of additional bound constraints along the branch-and-bound tree
+            - fractional_int: the set of integer variables that are fractional in the optimal solution of the bounding problem
+            - fractional_bin: the set of binary variables that are fractional in the optimal solution of the bounding problem
+        """
+        # Create the nodal bounding model
+        self.bounding_problem = self.lp_relaxation.copy()
         node = self.branch_bound_tree[node_index]
         cutSet = node['cuts']  # the set of cuts inherited from its parent's node
         trace = node['trace']  # the set of additional bound constraint along the branch-and-bound tree
@@ -292,46 +329,51 @@ class BranchAndBoundFramework:
         for item in trace:
             varName, sense, bound = item
             if sense == '<':
-                self.subproblem.getVarByName(varName).ub = bound  # x <= floor(xhat) = ub
+                self.bounding_problem.getVarByName(varName).ub = bound  # x <= floor(xhat) = ub
             elif sense == '>':
-                self.subproblem.getVarByName(varName).lb = bound  # x >= ceil(xhat) = lb
+                self.bounding_problem.getVarByName(varName).lb = bound  # x >= ceil(xhat) = lb
             elif sense == '=':  # this is useless
-                self.subproblem.getVarByName(varName).ub = bound
-                self.subproblem.getVarByName(varName).lb = bound
-        # add cuts to subproblem
+                self.bounding_problem.getVarByName(varName).ub = bound
+                self.bounding_problem.getVarByName(varName).lb = bound
+        # add the previous cuts to subproblem
+        if node['cutRHS'] != None:
+            self.bounding_problem.addMConstr(node['cutA'], self.variables, GRB.GREATER_EQUAL, node['cutRHS'])
+        # add the new cut to subproblem
         for i, cut in cutSet.items():
             piBest = cut['piBest']  # piBest is a dictionary
             pi0Best = cut['pi0Best']  # pi0Best is a float
             newCut = gp.LinExpr(- pi0Best)
             for var in self.varName:
-                newCut += self.subproblem.getVarByName(var) * piBest[var]
-            self.subproblem.addConstr(newCut >= 0.0)
+                newCut += self.bounding_problem.getVarByName(var) * piBest[var]
+            self.bounding_problem.addConstr(newCut >= 0.0)
 
-        self.subproblem.update()
-        self.subproblem.optimize()
-        if self.subproblem.status == GRB.INFEASIBLE:
+        self.bounding_problem.update()
+        self.bounding_problem.optimize()
+        if self.bounding_problem.status == GRB.INFEASIBLE:
             # fathom infeasible nodes
             del self.branch_bound_tree[node_index]
             print(f'fathom node {node_index} by infeasibility')
             return
-        if self.cglpNodeSelectionModel == 'parentnode-based':
-            self.A = self.subproblem.getA()
-            self.RHS = self.subproblem.getAttr('RHS')
-            self.SENSE = self.subproblem.getAttr('Sense')
+        # if self.cglpNodeSelectionModel == 'parentnode-based':
+        #     self.A = self.bounding_problem.getA()
+        #     self.RHS = self.bounding_problem.getAttr('RHS')
+        #     self.SENSE = self.bounding_problem.getAttr('Sense')
 
-        node['sol'] = self.subproblem.x
-        node['value'] = self.subproblem.objVal
+        node['sol'] = self.bounding_problem.x
+        node['value'] = self.bounding_problem.objVal
+        node['cutA'] = self.bounding_problem.getA()[len(self.SENSE):]
+        node['cutRHS'] = self.bounding_problem.getAttr('RHS')[len(self.SENSE):]
 
         non_integer_vars = {}
         non_binary_vars = {}
-        if self.subproblem.status == GRB.OPTIMAL:
+        if self.bounding_problem.status == GRB.OPTIMAL:
             # check if the solution is integer
             for v in self.integer_vars:
-                relaxed_value = self.subproblem.getVarByName(v.varName).x
+                relaxed_value = self.bounding_problem.getVarByName(v.varName).x
                 if not math.isclose(relaxed_value, round(relaxed_value), abs_tol=1e-6):
                     non_integer_vars[v.varName] = abs(relaxed_value - round(relaxed_value))
             for v in self.binary_vars:
-                relaxed_value = self.subproblem.getVarByName(v.varName).x
+                relaxed_value = self.bounding_problem.getVarByName(v.varName).x
                 if not math.isclose(relaxed_value, round(relaxed_value)):
                     non_binary_vars[v.varName] = abs(relaxed_value - round(relaxed_value))
 
@@ -354,6 +396,15 @@ class BranchAndBoundFramework:
                     self.lower_bound['value'] = node['value']
 
     def cut_generation_node_selection(self):
+        """
+            Select a set of nodes to generate cuts
+            There are three rules to select nodes to generate cuts:
+            - Bound-based Rule: select the nodes with the smallest lower bounds
+            - Parent Node-based Rule: select the all child nodes of the branching node (self.branch_node)
+            - RL-based Rule: use RL to select a set of nodes to generate cuts
+
+            return self.nodeSet
+        """
         # TODO:: Using RL to selection a set of nodes to generate cuts
         # here we use up to 3 most promising nodes to generate cut
         self.nodeSet = {}
@@ -386,6 +437,8 @@ class BranchAndBoundFramework:
                             tmp_LB[pos] = max(tmp_LB[pos], bound)
                     node['LB'] = tmp_LB
                     node['UB'] = tmp_UB
+                    # node['cutA'] = self.branch_bound_tree[node_index]['cutA']
+                    # node['cutRHS'] = self.branch_bound_tree[node_index]['cutRHS']
                     self.nodeSet[node_index] = node
         else:
             print(f'nodeSet is None')
@@ -398,27 +451,26 @@ class BranchAndBoundFramework:
         pi0 = cglp.addVar(vtype=GRB.CONTINUOUS, lb=-float('inf'), name=f'pi_0', obj=-1.0)
         cglp.update()
         # Set objective
-        if self.incumbent == None:
-            # cglp.setObjective(0, GRB.MINIMIZE)
-            cglp.setObjective(
+        cglp.setObjective(
                 gp.quicksum(pi[v] * self.lower_bound_sol[self.varName_map_position[v]] for v in self.varName) - pi0,
                 GRB.MINIMIZE)
-        else:
+        if self.incumbent != None:
             self.nodeSelectionModel = 'BBR'
-            cglp.setObjective(
-                gp.quicksum(pi[v] * self.incumbent[self.varName_map_position[v]] for v in self.varName) - pi0,
-                GRB.MINIMIZE)
 
         num_constrs, num_vars = self.A.shape[0], self.A.shape[1]  # self.mipModel.getAttr('NumConstrs'), self.mipModel.getAttr('NumVars')
         cglp_lambda = {}
         cglp_mu = {}
         cglp_v = {}
+        cglp_gamma = {}
         # cglp normalization constraint
         normalizationConstraint = gp.LinExpr(-1.0)
         for node_index, node in self.nodeSet.items():
             cglp_lambda[node_index] = []
             cglp_mu[node_index] = []
             cglp_v[node_index] = []
+            cglp_gamma[node_index] = [] 
+
+            num_cuts = len(self.branch_bound_tree[node_index]['cutRHS']) if self.branch_bound_tree[node_index]['cutRHS'] != None else 0
             # cglp equation (3) in ORL paper
             ineqConstraint = gp.LinExpr(-pi0)
             for i in range(num_constrs):
@@ -455,6 +507,12 @@ class BranchAndBoundFramework:
                 normalizationConstraint.addTerms(1, cglp_mu[node_index][i])
                 normalizationConstraint.addTerms(1, cglp_v[node_index][i])
 
+            for i in range(num_cuts):
+                cglp_gamma[node_index].append(
+                        cglp.addVar(vtype=GRB.CONTINUOUS, lb=0.0, name=f'gamma_{node_index}_{i}', obj=0.0))
+                ineqConstraint.addTerms(self.branch_bound_tree[node_index]['cutRHS'][i], cglp_gamma[node_index][i])
+                normalizationConstraint.addTerms(1, cglp_gamma[node_index][i])
+
             cglp.addConstr(ineqConstraint >= 0, name=f'equation3_{node_index}')
 
             # cglp equation (2) in ORL paper
@@ -464,7 +522,7 @@ class BranchAndBoundFramework:
                 eqConstraint.addTerms(1, cglp_mu[node_index][i])
                 eqConstraint.addTerms(-1, cglp_v[node_index][i])
 
-                ## add matrix multiplication term
+                ## add constraint matrix multiplication term
                 constr_index = self.A.getcol(i).nonzero()[0]  # the set of constraints that contain the variable 'var'
                 for j in constr_index:
                     sense = self.SENSE[j]
@@ -475,6 +533,11 @@ class BranchAndBoundFramework:
                     elif sense == '=':
                         eqConstraint.addTerms(self.A[j, i], cglp_lambda[node_index][j]['+'])
                         eqConstraint.addTerms(-self.A[j, i], cglp_lambda[node_index][j]['-'])
+
+                ## add cut matrix multiplication term
+                constr_index = self.branch_bound_tree[node_index]['cutA'].getcol(i).nonzero()[0]  # the set of constraints that contain the variable 'var'
+                for j in constr_index:
+                    eqConstraint.addTerms(self.branch_bound_tree[node_index]['cutA'][j, i], cglp_gamma[node_index][j])
 
                 cglp.addConstr(eqConstraint == 0, name=f'equation2_{node_index}_{var}')
         # normalization constraint
@@ -495,14 +558,13 @@ class BranchAndBoundFramework:
         cglp.optimize()
         if cglp.status == GRB.OPTIMAL:  #
             # add a cut to the LP relaxation model
-            # TODO:: What is the difference between addConstr and cbCut? Could I use cbCut to add a cut to the LP relaxation model?
             piBest = cglp.getAttr('x', pi)  # piBest is a dictionary
             pi0Best = cglp.getVarByName('pi_0').x  # pi0Best is a float
             for node_index in self.nodeSet.keys():
                 cut = {}
                 cut['piBest'] = piBest
                 cut['pi0Best'] = pi0Best
-                self.branch_bound_tree[node_index]['cuts'][len(self.branch_bound_tree[node_index]['cuts']) + 1] = cut
+                self.branch_bound_tree[node_index]['cuts'][1] = cut
                 self.nodal_problem(node_index)
 
             # newCut=gp.LinExpr(- pi0Best) 

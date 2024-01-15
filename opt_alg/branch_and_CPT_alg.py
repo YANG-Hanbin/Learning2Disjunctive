@@ -12,9 +12,12 @@ import random
 from opt_alg.branch_and_bound_framework import BranchAndBoundFramework
 
 
-
-class BranchAndDisjunctiveCutAlgorithm(BranchAndBoundFramework):
-    def __init__(self, *args, number_branch_var = 2, number_branch_node = 2, **kwargs):
+"""
+    The class BranchAndDisjunctiveCutAlgorithm is a subclass of BranchAndBoundFramework, which implements the branch-and-CPT algorithm.
+    - It allows to select multiple branching variables instead of one branching variable in each iteration.
+"""
+class BranchAndCuttingPlaneTreeAlgorithm(BranchAndBoundFramework):
+    def __init__(self, *args, number_branch_var = 2, number_branch_node = 1, **kwargs):
         # Initialize parent class with all arguments passed
         super().__init__(*args, **kwargs)
         # Initialization for new attributes
@@ -23,6 +26,11 @@ class BranchAndDisjunctiveCutAlgorithm(BranchAndBoundFramework):
 
 
     def branch_variable_selection(self):
+        """
+            Select a set of variables to branch
+
+            return: self.branchVar, a dictionary with key: variable name, value: variable value
+        """
         # super().branch_variable_selection()  # method overriding: You can call the original method, too, if needed
         number_of_candidates = self.number_branch_var  # the number of variables that are chosen to branch, so the number of nodes in the branching tree is 2^number_of_candidates
         node = self.branch_bound_tree[self.branch_node]
@@ -50,6 +58,11 @@ class BranchAndDisjunctiveCutAlgorithm(BranchAndBoundFramework):
         
 
     def branching_tree_building(self, level, branch_node, sol):
+        """
+            Auxiliary function for the method self.branching()
+            
+            Build the branching tree
+        """
         # create two new nodes with info in self.branch_node, del self.branch_node, update two new nodes with the
         # method self.nodal_problem
         if level == len(self.branchVar.keys()):
@@ -62,11 +75,15 @@ class BranchAndDisjunctiveCutAlgorithm(BranchAndBoundFramework):
             pos = self.varName_map_position[branch_variable]
             left_node = {}
             left_node['cuts'] = deepcopy(node['cuts'])
+            left_node['cutA'] = deepcopy(node['cutA'])
+            left_node['cutRHS'] = deepcopy(node['cutRHS'])
             left_node['trace'] = deepcopy(node['trace'])
             left_node['trace'].append([branch_variable, '<', math.floor(sol[pos])])  # x <= floor(xhat)
 
             right_node = {}
             right_node['cuts'] = deepcopy(node['cuts'])
+            right_node['cutA'] = deepcopy(node['cutA'])
+            right_node['cutRHS'] = deepcopy(node['cutRHS'])
             right_node['trace'] = deepcopy(node['trace'])
             right_node['trace'].append([branch_variable, '>', math.ceil(sol[pos])])  # x >= ceil(xhat)
 
@@ -79,20 +96,33 @@ class BranchAndDisjunctiveCutAlgorithm(BranchAndBoundFramework):
             self.branching_tree_building(level + 1, right_node_ind, sol)
 
     def branching(self):
+        """
+            Build the branching tree by naive CPT algorithm
+            In other words, this is "Parent-Based Branching".
+
+            return: self.nodeSet, a dictionary with key: node_index, value: node info
+        """
         self.nodeSet = {}
         self.branching_tree_building(0, self.branch_node, self.branch_bound_tree[self.branch_node]['sol'])
     
     def cut_generation_node_selection(self):
+        """
+            Select a set of nodes to generate cuts
+            In other words, this is "nodal selection".
+
+            return: self.nodeSet, a dictionary with key: node_index, value: node info
+        """
         # TODO:: Using RL to selection a set of nodes to generate cuts
         nodeSet = None # the set of node_index to generate cuts
-        if self.cglpNodeSelectionModel == 'bound-based':
+        if self.cglpNodeSelectionModel == 'bound-based':                                            
             node_values = [(node_index, node['value']) for node_index, node in self.branch_bound_tree.items()]
             node_values.sort(key=lambda x: x[1])
             nodeSet = [node_index for node_index, value in node_values[:self.nodeNumber]]
             # nodeSet = self.branch_bound_tree.keys() 
-        elif self.cglpNodeSelectionModel == 'parentnode-based':
+        elif self.cglpNodeSelectionModel == 'parentnode-based':                                     
             nodeSet = list(self.nodeSet.keys())
         elif self.cglpNodeSelectionModel == 'RL-based':
+            
             pass
 
         self.nodeSet = {} # initialize the set of node with info to generate cuts
