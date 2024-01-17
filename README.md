@@ -33,6 +33,8 @@ There are three primary algorithms explored:
        1. `BBR`: Best Bound Rule
 
        2. `DNFR`: *Deepest Node First Rule (default after an incumbent is founded)*
+
+       3. `RAND`: *Randomly choose a node*
      - Branching Variable Selection: 
        1. *Maximum Fractionality Rule*: according to the solution info in the selected node (default)
        2. RL-based method (<font color="red">Partially solved in Naive-CPT algorithm</font>) 
