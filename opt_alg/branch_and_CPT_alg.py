@@ -141,7 +141,6 @@ class BranchAndCuttingPlaneTreeAlgorithm(BranchAndBoundFramework):
         right_node_ind = left_node_ind + 1
         self.branch_bound_tree[left_node_ind] = left_node
         self.branch_bound_tree[right_node_ind] = right_node
-        del self.branch_bound_tree[self.branch_node]
         feasibilityLeft = self.feasibilityTest(left_node_ind, self.branch_bound_tree)
         feasibilityRight = self.feasibilityTest(right_node_ind, self.branch_bound_tree)
         
@@ -164,6 +163,7 @@ class BranchAndCuttingPlaneTreeAlgorithm(BranchAndBoundFramework):
             # generate cuts
             self.cut_generation(right_node_ind)
 
+        del self.branch_bound_tree[self.branch_node]
 
     def cutting_plane_tree_building(self, level, branch_node_ind, sol):
         """
@@ -182,11 +182,15 @@ class BranchAndCuttingPlaneTreeAlgorithm(BranchAndBoundFramework):
             left_node = {}
             left_node['cuts'] = deepcopy(node['cuts'])
             left_node['trace'] = deepcopy(node['trace'])
+            left_node['cutA'] = deepcopy(node['cutA'])
+            left_node['cutRHS'] = deepcopy(node['cutRHS'])
             left_node['trace'].append([branch_variable, '<', math.floor(sol[pos])])  # x <= floor(xhat)
 
             right_node = {}
             right_node['cuts'] = deepcopy(node['cuts'])
             right_node['trace'] = deepcopy(node['trace'])
+            right_node['cutA'] = deepcopy(node['cutA'])
+            right_node['cutRHS'] = deepcopy(node['cutRHS'])
             right_node['trace'].append([branch_variable, '>', math.floor(sol[pos])+1])  # x >= ceil(xhat)
 
             left_node_ind = max(self.cutting_plane_tree.keys()) + 1
@@ -225,7 +229,7 @@ class BranchAndCuttingPlaneTreeAlgorithm(BranchAndBoundFramework):
                     node = {}
                     tmp_LB = deepcopy(self.LB)
                     tmp_UB = deepcopy(self.UB)
-                    for item in self.branch_bound_tree[node_index]['trace']:
+                    for item in self.cutting_plane_tree[node_index]['trace']:
                         varName, sense, bound = item
                         pos = self.varName_map_position[varName]
                         if sense == '<':
@@ -243,14 +247,17 @@ class BranchAndCuttingPlaneTreeAlgorithm(BranchAndBoundFramework):
 
 
     def cut_generation(self, child_node_index):
+        self.nodal_problem(child_node_index)
         cglp = gp.Model("cglp")
         # Create variables
         pi = cglp.addVars(self.varName, vtype=GRB.CONTINUOUS, lb=-float('inf'), name=f"pi", obj=0.0)
         pi0 = cglp.addVar(vtype=GRB.CONTINUOUS, lb=-float('inf'), name=f'pi_0', obj=-1.0)
         cglp.update()
         # Set objective
+        sol = self.branch_bound_tree[child_node_index]['sol']
+        # sol = self.lower_bound_sol
         cglp.setObjective(
-                gp.quicksum(pi[v] * self.lower_bound_sol[self.varName_map_position[v]] for v in self.varName) - pi0,
+                gp.quicksum(pi[v] * sol[self.varName_map_position[v]] for v in self.varName) - pi0,
                 GRB.MINIMIZE)
         if self.incumbent != None:
             self.nodeSelectionMode = 'BBR'
@@ -268,7 +275,7 @@ class BranchAndCuttingPlaneTreeAlgorithm(BranchAndBoundFramework):
             cglp_v[node_index] = []
             cglp_gamma[node_index] = [] 
 
-            num_cuts = len(self.branch_bound_tree[node_index]['cutRHS']) if self.branch_bound_tree[node_index]['cutRHS'] != None else 0
+            num_cuts = len(self.cutting_plane_tree[node_index]['cutRHS']) if self.cutting_plane_tree[node_index]['cutRHS'] != None else 0
             # cglp equation (3) in ORL paper
             ineqConstraint = gp.LinExpr(-pi0)
             for i in range(num_constrs):
@@ -308,7 +315,7 @@ class BranchAndCuttingPlaneTreeAlgorithm(BranchAndBoundFramework):
             for i in range(num_cuts):
                 cglp_gamma[node_index].append(
                         cglp.addVar(vtype=GRB.CONTINUOUS, lb=0.0, name=f'gamma_{node_index}_{i}', obj=0.0))
-                ineqConstraint.addTerms(self.branch_bound_tree[node_index]['cutRHS'][i], cglp_gamma[node_index][i])
+                ineqConstraint.addTerms(self.cutting_plane_tree[node_index]['cutRHS'][i], cglp_gamma[node_index][i])
                 normalizationConstraint.addTerms(1, cglp_gamma[node_index][i])
 
             cglp.addConstr(ineqConstraint >= 0, name=f'equation3_{node_index}')
@@ -333,9 +340,9 @@ class BranchAndCuttingPlaneTreeAlgorithm(BranchAndBoundFramework):
                         eqConstraint.addTerms(-self.A[j, i], cglp_lambda[node_index][j]['-'])
 
                 ## add cut matrix multiplication term
-                constr_index = self.branch_bound_tree[node_index]['cutA'].getcol(i).nonzero()[0]  # the set of constraints that contain the variable 'var'
+                constr_index = self.cutting_plane_tree[node_index]['cutA'].getcol(i).nonzero()[0] if self.cutting_plane_tree[node_index]['cutRHS'] != None else []# the set of constraints that contain the variable 'var'
                 for j in constr_index:
-                    eqConstraint.addTerms(self.branch_bound_tree[node_index]['cutA'][j, i], cglp_gamma[node_index][j])
+                    eqConstraint.addTerms(self.cutting_plane_tree[node_index]['cutA'][j, i], cglp_gamma[node_index][j])
 
                 cglp.addConstr(eqConstraint == 0, name=f'equation2_{node_index}_{var}')
         # normalization constraint
@@ -381,6 +388,7 @@ class BranchAndCuttingPlaneTreeAlgorithm(BranchAndBoundFramework):
                 return
             # selection a variable to branch
             self.branch_variable_selection()
+            self.naive_cpt_variable_selection()
             # branch
             self.branching_and_cut_generation()
             # bound

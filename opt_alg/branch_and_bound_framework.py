@@ -423,6 +423,8 @@ class BranchAndBoundFramework:
                     self.incumbent = node['sol']
                     self.lower_bound['node'] = node_index
                     self.lower_bound['value'] = node['value']
+            if self.incumbent != None:
+                self.nodeSelectionMode = 'BBR'
 
 
     def print_iteration_info(self, iteration_time=0.0, overall=0.0):
