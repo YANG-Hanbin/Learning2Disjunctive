@@ -18,7 +18,7 @@ from opt_alg.branch_and_bound_framework import BranchAndBoundFramework
 
 
 class BranchAndCuttingPlaneTreeAlgorithm(BranchAndBoundFramework):
-    def __init__(self, *args, number_branch_var=2, number_branch_node=1, cptVariableSelectionMode = 'MFR', **kwargs):
+    def __init__(self, *args, number_branch_var=2, number_branch_node=1, disjunctiveCut = True, cptVariableSelectionMode = 'MFR', **kwargs):
         # Initialize parent class with all arguments passed
         super().__init__(*args, **kwargs)
         # Initialization for new attributes
@@ -27,9 +27,10 @@ class BranchAndCuttingPlaneTreeAlgorithm(BranchAndBoundFramework):
         self.cutting_plane_tree = {}                         # key: node_index <- value: (trace, cuts), all leaf nodes
         self.nodeSet = {}                                    # nodeSet[node] <- (LB, UB)
         self.cptVariableSelectionMode = cptVariableSelectionMode  # 'MFR', 'RAND' in CPT
+        self.disjunctiveCut = disjunctiveCut
 
 
-    def naive_cpt_variable_selection(self):
+    def naive_cpt_variable_selection(self, node_index):
         """
             Select a set of variables to branch in naive CPT algorithm
 
@@ -37,7 +38,7 @@ class BranchAndCuttingPlaneTreeAlgorithm(BranchAndBoundFramework):
         """
         # super().branch_variable_selection()  # method overriding: You can call the original method, too, if needed
         number_of_candidates = self.number_branch_var  # the number of variables that are chosen to branch, so the number of nodes in the branching tree is 2^number_of_candidates
-        node = self.branch_bound_tree[self.branch_node]
+        node = self.branch_bound_tree[node_index]
         number_of_noninteger = len(node['fractional_int'])
         number_of_nonbinary = len(node['fractional_bin'])
         if self.cptVariableSelectionMode == 'MFR':
@@ -70,7 +71,7 @@ class BranchAndCuttingPlaneTreeAlgorithm(BranchAndBoundFramework):
                 list2 = list(node['fractional_bin'].keys())
                 self.branchVar = {random.choice(list2): number_of_candidates}
             else:
-                print(f'node {self.branch_node} has no fractional variables')
+                print(f'node {node_index} has no fractional variables')
                 exit()
 
 
@@ -141,27 +142,30 @@ class BranchAndCuttingPlaneTreeAlgorithm(BranchAndBoundFramework):
         right_node_ind = left_node_ind + 1
         self.branch_bound_tree[left_node_ind] = left_node
         self.branch_bound_tree[right_node_ind] = right_node
-        feasibilityLeft = self.feasibilityTest(left_node_ind, self.branch_bound_tree)
-        feasibilityRight = self.feasibilityTest(right_node_ind, self.branch_bound_tree)
+        feasibilityLeft = self.nodal_problem(left_node_ind)
+        feasibilityRight = self.nodal_problem(right_node_ind)
         
         # build a naive CPT tree for the left node (Node-Based Branching)
-        if feasibilityLeft:
-            self.cutting_plane_tree = {}
-            self.cutting_plane_tree[left_node_ind] = left_node
-            self.cutting_plane_tree_building(0, left_node_ind, self.branch_bound_tree[self.branch_node]['sol'])
-            # select nodes to generate cuts
-            self.cut_generation_node_selection()
-            # generate cuts
-            self.cut_generation(left_node_ind)
-        # build a naive CPT tree for the right node (Node-Based Branching)
-        if feasibilityRight:
-            self.cutting_plane_tree = {}
-            self.cutting_plane_tree[right_node_ind] = right_node
-            self.cutting_plane_tree_building(0, right_node_ind, self.branch_bound_tree[self.branch_node]['sol'])
-            # select nodes to generate cuts
-            self.cut_generation_node_selection()
-            # generate cuts
-            self.cut_generation(right_node_ind)
+        if self.disjunctiveCut:
+            if feasibilityLeft:
+                self.cutting_plane_tree = {}
+                self.naive_cpt_variable_selection(left_node_ind)
+                self.cutting_plane_tree[left_node_ind] = left_node
+                self.cutting_plane_tree_building(0, left_node_ind, self.branch_bound_tree[self.branch_node]['sol'])
+                # select nodes to generate cuts
+                self.cut_generation_node_selection()
+                # generate cuts
+                self.cut_generation(left_node_ind)
+            # build a naive CPT tree for the right node (Node-Based Branching)
+            if feasibilityRight:
+                self.cutting_plane_tree = {}
+                self.naive_cpt_variable_selection(right_node_ind)
+                self.cutting_plane_tree[right_node_ind] = right_node
+                self.cutting_plane_tree_building(0, right_node_ind, self.branch_bound_tree[self.branch_node]['sol'])
+                # select nodes to generate cuts
+                self.cut_generation_node_selection()
+                # generate cuts
+                self.cut_generation(right_node_ind)
 
         del self.branch_bound_tree[self.branch_node]
 
@@ -247,7 +251,6 @@ class BranchAndCuttingPlaneTreeAlgorithm(BranchAndBoundFramework):
 
 
     def cut_generation(self, child_node_index):
-        self.nodal_problem(child_node_index)
         cglp = gp.Model("cglp")
         # Create variables
         pi = cglp.addVars(self.varName, vtype=GRB.CONTINUOUS, lb=-float('inf'), name=f"pi", obj=0.0)
@@ -388,7 +391,6 @@ class BranchAndCuttingPlaneTreeAlgorithm(BranchAndBoundFramework):
                 return
             # selection a variable to branch
             self.branch_variable_selection()
-            self.naive_cpt_variable_selection()
             # branch
             self.branching_and_cut_generation()
             # bound

@@ -385,7 +385,7 @@ class BranchAndBoundFramework:
             # fathom infeasible nodes
             del self.branch_bound_tree[node_index]
             print(f'fathom node {node_index} by infeasibility')
-            return
+            return False
 
         node['sol'] = self.bounding_problem.x
         node['value'] = self.bounding_problem.objVal
@@ -425,6 +425,7 @@ class BranchAndBoundFramework:
                     self.lower_bound['value'] = node['value']
             if self.incumbent != None:
                 self.nodeSelectionMode = 'BBR'
+        return True
 
 
     def print_iteration_info(self, iteration_time=0.0, overall=0.0):
