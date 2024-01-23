@@ -13,7 +13,7 @@ import random
 class BranchAndBoundFramework:
     def __init__(self, instanceName, maxIteration=100, OutputFlag=0, Threads=1, MIPGap=0.0, TimeLimit=3600, MIPFocus=2,
                  cglp_OutputFlag=0, cglp_Threads=1, cglp_MIPGap=0.0, cglp_TimeLimit=100, cglp_MIPFocus=0,
-                 addCutToMIP=False, normalization='SNC', nodeSelectionMode = 'DNFR', branchVariableSelectionMode = 'MFR'):
+                 addCutToMIP=False, normalization='SNC', nodeSelectionMode='DNFR', branchVariableSelectionMode='MFR'):
         self.iteration = 0
         self.maxIteration = maxIteration
         self.maxBound = 1e5
@@ -62,8 +62,8 @@ class BranchAndBoundFramework:
         self.upper_bound = {'node': 0, 'value': math.inf}
         self.lower_bound_sol = None  # (for minimization problem) the nodal solution corresponding to the lower bound in the branch-and-bound tree
         self.incumbent = None
-        self.nodeSelectionMode = nodeSelectionMode                                      # 'DNFR', 'BBR', 'RAND' in branch-&-bound
-        self.branchVariableSelectionMode = branchVariableSelectionMode                  # 'MFR', 'RAND' in branch-&-bound
+        self.nodeSelectionMode = nodeSelectionMode  # 'DNFR', 'BBR', 'RAND' in branch-&-bound
+        self.branchVariableSelectionMode = branchVariableSelectionMode  # 'MFR', 'RAND' in branch-&-bound
         # intialize the instance
         self.readin()
 
@@ -71,6 +71,8 @@ class BranchAndBoundFramework:
     def readin(self):
         # load instance info
         ins_dir = f'benchmark/' + self.instanceName + '.mps.gz'
+        if 'mnt' in ins_dir:
+            ins_dir = self.instanceName + '.mps.gz'
         self.mipModel = gp.read(ins_dir)
         self.variables = self.mipModel.getVars()
         self.integer_vars = [var for var in self.variables if var.vType == GRB.INTEGER]
@@ -142,7 +144,7 @@ class BranchAndBoundFramework:
             node['value'] = self.lp_relaxation.objVal
             node['cuts'] = {}  # to receive the new cut generated in cglp
             node['trace'] = []  # to record all additional bounding constraints
-            node['cutA'] = None # to record the cut constraint matrix and RHS
+            node['cutA'] = None  # to record the cut constraint matrix and RHS
             node['cutRHS'] = None
 
             non_integer_vars = {}  # the sef of int varName that are fractional
@@ -229,8 +231,7 @@ class BranchAndBoundFramework:
                             self.upper_bound = {'node': node_index, 'value': upper_bound}
                             self.lower_bound_sol = node['sol']
                     # randomly choose a node
-                    self.branch_node = random.choice(list(self.branch_bound_tree.keys())) 
-
+                    self.branch_node = random.choice(list(self.branch_bound_tree.keys()))
 
     def branch_variable_selection(self):
         """
@@ -251,7 +252,8 @@ class BranchAndBoundFramework:
             maxKey = None
             maxDistance = None
             if number_of_noninteger > 0:
-                maxKey = max(node['fractional_int'], key=node['fractional_int'].get)  # find the integer variables that have the largest distance to the nearest integer
+                maxKey = max(node['fractional_int'], key=node[
+                    'fractional_int'].get)  # find the integer variables that have the largest distance to the nearest integer
                 maxDistance = node['fractional_int'][maxKey]
 
             if number_of_nonbinary > 0:
@@ -262,7 +264,7 @@ class BranchAndBoundFramework:
                     maxKey = tmp_maxKey
                     maxDistance = tmp_maxDistance
             self.branch_variable = maxKey
-        elif self.branchVariableSelectionMode   == 'RAND':
+        elif self.branchVariableSelectionMode == 'RAND':
             node = self.branch_bound_tree[self.branch_node]
             number_of_noninteger = len(node['fractional_int'])
             number_of_nonbinary = len(node['fractional_bin'])
@@ -273,7 +275,6 @@ class BranchAndBoundFramework:
             else:
                 print(f'node {self.branch_node} has no fractional variables')
                 exit()
-
 
     def branching(self):
         """
@@ -294,7 +295,7 @@ class BranchAndBoundFramework:
         right_node = {}
         right_node['cuts'] = deepcopy(node['cuts'])
         right_node['trace'] = deepcopy(node['trace'])
-        right_node['trace'].append([self.branch_variable, '>', math.floor(node['sol'][pos])+1])  # x >= ceil(xhat)
+        right_node['trace'].append([self.branch_variable, '>', math.floor(node['sol'][pos]) + 1])  # x >= ceil(xhat)
         right_node['cutA'] = deepcopy(node['cutA'])
         right_node['cutRHS'] = deepcopy(node['cutRHS'])
 
@@ -305,7 +306,6 @@ class BranchAndBoundFramework:
         del self.branch_bound_tree[self.branch_node]
         self.nodal_problem(left_node_ind)
         self.nodal_problem(right_node_ind)
-
 
     def fathom_by_bounding(self):
         """
@@ -338,8 +338,6 @@ class BranchAndBoundFramework:
                     for node_index in to_delete:
                         del self.branch_bound_tree[node_index]
                         print(f'fathom node {node_index} by bounding')
-
-
 
     def nodal_problem(self, node_index):  # node_index is a new child node
         """
@@ -385,13 +383,13 @@ class BranchAndBoundFramework:
             # fathom infeasible nodes
             del self.branch_bound_tree[node_index]
             print(f'fathom node {node_index} by infeasibility')
-            return False
+            return
 
         node['sol'] = self.bounding_problem.x
         node['value'] = self.bounding_problem.objVal
         node['cutA'] = self.bounding_problem.getA()[len(self.SENSE):]
         node['cutRHS'] = self.bounding_problem.getAttr('RHS')[len(self.SENSE):]
-        node['cuts'] = {} # reset the cut set
+        node['cuts'] = {}  # reset the cut set
 
         non_integer_vars = {}
         non_binary_vars = {}
@@ -426,19 +424,24 @@ class BranchAndBoundFramework:
             if self.incumbent != None:
                 self.nodeSelectionMode = 'BBR'
         return True
-
+            
 
     def print_iteration_info(self, iteration_time=0.0, overall=0.0):
         if self.OPT == True:
-            print(f'---------------------------------------------------------------------------------------------------------')
+            print(
+                f'---------------------------------------------------------------------------------------------------------')
             print('Optimality of MIP has been established!')
         if self.iteration >= 1:
             if self.iteration == 1:
-                print(f'This problem has {len(self.integer_vars)} integer variables and {len(self.binary_vars)} binary variables.')
+                print(
+                    f'This problem has {len(self.integer_vars)} integer variables and {len(self.binary_vars)} binary variables.')
                 print(f'The optimal value of LP relaxation is {self.lp_relaxation.objVal}.')
-                print(f'---------------------------------------------------------------------------------------------------------')
-                print(f'|  Iter  |    Lower Bound   |   Overall Improvement   |    Upper Bound   |  Iter Time  |  Overall Time  |')
-                print(f'---------------------------------------------------------------------------------------------------------')
+                print(
+                    f'---------------------------------------------------------------------------------------------------------')
+                print(
+                    f'|  Iter  |    Lower Bound   |   Overall Improvement   |    Upper Bound   |  Iter Time  |  Overall Time  |')
+                print(
+                    f'---------------------------------------------------------------------------------------------------------')
             else:
                 print('| ' + '{:7d}'.format(self.iteration - 1) +
                       '| ' + '{:17.4f}'.format(self.lower_bound['value']) +
@@ -449,8 +452,8 @@ class BranchAndBoundFramework:
                       '{:14.4f}'.format(overall) + ' |')
 
         if self.iteration > self.maxIteration:
-            print(f'---------------------------------------------------------------------------------------------------------')
-
+            print(
+                f'---------------------------------------------------------------------------------------------------------')
 
     def solve(self):
         time_init = time.time()
@@ -469,7 +472,7 @@ class BranchAndBoundFramework:
             # bound
             self.fathom_by_bounding()
             iter_end = time.time()
-            
+
             overall = iter_end - time_init
             iteration_time = iter_end - iter_begin
             self.branch_node_selection()
